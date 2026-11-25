@@ -1,5 +1,6 @@
 # Secrets and local runtime state — never commit.
 .env
+.ssh/
 venv/
 __pycache__/
 *.pyc
