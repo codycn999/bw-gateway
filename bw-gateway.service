@@ -1,0 +1,17 @@
+[Unit]
+Description=Bitwarden Secrets Manager gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bw-gateway
+Group=bw-gateway
+WorkingDirectory=/opt/bw-gateway
+ExecStart=/opt/bw-gateway/venv/bin/uvicorn app:app --host 127.0.0.1 --port 8080
+Restart=on-failure
+RestartSec=5s
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
