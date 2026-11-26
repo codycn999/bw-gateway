@@ -9,6 +9,8 @@ agent --HTTPS, Authorization: Bearer <agent key>--> Cloudflare --tunnel--> cloud
       --> 127.0.0.1:8080 bw-gateway --machine-account token--> vault.bitwarden.com
 ```
 
+Owner's VM command cheat sheet (Chinese): [docs/admin-cheatsheet.md](docs/admin-cheatsheet.md).
+
 ## For agents
 
 Send the key in a header, never in the URL (URLs land in logs; the gateway
