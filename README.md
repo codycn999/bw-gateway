@@ -5,7 +5,7 @@ sends its own gateway key in a header and gets back the secrets that key is
 allowed to read. The Bitwarden machine-account token stays on the VM.
 
 ```
-agent --HTTPS, Authorization: Bearer <agent key>--> Caddy / Cloudflare Tunnel
+agent --HTTPS, Authorization: Bearer <agent key>--> Cloudflare --tunnel--> cloudflared on the VM
       --> 127.0.0.1:8080 bw-gateway --machine-account token--> vault.bitwarden.com
 ```
 
@@ -33,7 +33,7 @@ curl -fsS -H "$H" -H 'Content-Type: application/json' \
 | GET | `/v1/secrets/{name}` | One secret as JSON. `{name}` may also be the secret id. |
 | GET | `/v1/value/{name}` | One secret's value as `text/plain`. |
 | POST | `/v1/secrets/batch` | `{"names":[...]}` (max 50) → `{"secrets":{name:value}, "missing":[...]}` |
-| GET | `/secrets/by-key/{key}` | Old route, same scoping. Not exposed through the HTTPS entry. |
+| GET | `/secrets/by-key/{key}` | Old route, same scoping. SSH only; the tunnel does not route it. |
 
 Errors are JSON `{"error": "..."}`:
 
@@ -68,8 +68,8 @@ every agent has its own key.
 
 - 60 requests per key per minute (`GATEWAY_RATE_PER_MIN`).
 - 10 failed authentications from one IP in 10 minutes block that IP for 15
-  minutes. Behind Caddy or cloudflared the real client IP comes from the
-  proxy's `X-Forwarded-For`, trusted only from `127.0.0.1`.
+  minutes. The real client IP comes from Cloudflare's `Cf-Connecting-IP`,
+  trusted only on connections from `127.0.0.1` (cloudflared).
 - Each read is logged to journald as
   `audit agent=<name> ip=<ip> action=get secrets=<names>`. Keys and values are
   never logged. `sudo journalctl -u bw-gateway | grep audit`.
@@ -78,18 +78,26 @@ every agent has its own key.
 
 All tunables are listed in `.env.example`.
 
-## HTTPS entry (one time, on the VM)
+## HTTPS entry: Cloudflare Tunnel (one time)
 
-The gateway keeps listening on `127.0.0.1:8080`. Pick one front door:
+The gateway keeps listening on `127.0.0.1:8080` and the VM opens no inbound
+port. cloudflared dials out to Cloudflare, which serves HTTPS on your domain.
 
-- **Caddy** (`deploy/Caddyfile`): set the host name (no domain needed:
-  `<external-ip>.sslip.io`), install Caddy, copy the file to
-  `/etc/caddy/Caddyfile`, `sudo systemctl reload caddy`. Open tcp:80 and
-  tcp:443 in the GCP firewall and give the VM a static external IP.
-- **Cloudflare Tunnel** (`deploy/cloudflared.yml`): needs a domain on
-  Cloudflare; no inbound ports.
+1. Cloudflare dashboard → **Zero Trust → Networks → Tunnels → Create a
+   tunnel** → Cloudflared → name it `bw-gateway`.
+2. Pick Debian, copy the install command it shows, and run it on the VM
+   (`sudo cloudflared service install <token>`). The token is a secret: keep
+   it out of chat. The tunnel turns **Healthy** in the dashboard.
+3. **Public hostname**: subdomain `gateway` (or any), your domain,
+   path `^/(health|v1/.*)$`, service `HTTP` → `localhost:8080`. Save.
+4. Requests to any other path get 404 from Cloudflare; nothing else is routed.
+5. Check from anywhere: `curl https://gateway.<your-domain>/health`, then
+   `curl -H "Authorization: Bearer <agent key>" https://gateway.<your-domain>/v1/whoami`.
 
-Both expose only `/health` and `/v1/*`.
+Optional extra layer: a Cloudflare WAF rate-limiting rule on the hostname.
+
+Prefer config files over the dashboard? `deploy/cloudflared.yml` has the same
+routing for a locally managed tunnel.
 
 ## Setup (on the VM)
 

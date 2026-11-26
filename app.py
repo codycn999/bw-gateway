@@ -290,11 +290,14 @@ log.info("loaded %d agent key(s): %s", len(AGENTS), ", ".join(sorted(a.name for 
 
 
 def client_ip(request: Request) -> str:
-    """Real client IP. X-Forwarded-For is trusted only from the local reverse
-    proxy (Caddy / cloudflared), and only its rightmost entry, which the proxy
-    itself appended."""
+    """Real client IP. Proxy headers are trusted only when the request comes
+    from the local cloudflared: Cf-Connecting-IP first (set by Cloudflare's
+    edge), else the rightmost X-Forwarded-For entry."""
     peer = request.client.host if request.client else "unknown"
     if peer in TRUSTED_PROXIES:
+        cf = request.headers.get("cf-connecting-ip", "").strip()
+        if cf:
+            return cf
         xff = request.headers.get("x-forwarded-for", "")
         if xff.strip():
             return xff.split(",")[-1].strip()

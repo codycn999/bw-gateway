@@ -207,6 +207,11 @@ def test_forwarded_for_only_from_trusted_proxy(client):
     assert client.appmod.client_ip(req) == "1.2.3.4"
     req = SimpleNamespace(client=SimpleNamespace(host="9.9.9.9"), headers={"x-forwarded-for": "1.2.3.4"})
     assert client.appmod.client_ip(req) == "9.9.9.9"
+    req = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"),
+                          headers={"cf-connecting-ip": "5.5.5.5", "x-forwarded-for": "1.2.3.4"})
+    assert client.appmod.client_ip(req) == "5.5.5.5"
+    req = SimpleNamespace(client=SimpleNamespace(host="9.9.9.9"), headers={"cf-connecting-ip": "5.5.5.5"})
+    assert client.appmod.client_ip(req) == "9.9.9.9"
 
 
 def test_whoami(client):
