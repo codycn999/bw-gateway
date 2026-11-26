@@ -17,6 +17,7 @@ sys.path.insert(0, ROOT)
 KEY_A = "a" * 64          # agent "cody": OPENAI_* and GITHUB_TOKEN
 KEY_B = "b" * 64          # agent "ci": one project
 KEY_C = "c" * 64          # agent "one": a single secret by uuid
+KEY_D = "d" * 64          # agent "chat": by-uuid
 KEY_LEGACY = "legacy-shared-key"
 PROJ = str(uuid.uuid4())
 
@@ -79,6 +80,7 @@ def client(monkeypatch):
     monkeypatch.setenv("GATEWAY_KEY_CODY", hashlib.sha256(KEY_A.encode()).hexdigest() + ":OPENAI_*, GITHUB_TOKEN,DUP")
     monkeypatch.setenv("GATEWAY_KEY_CI", hashlib.sha256(KEY_B.encode()).hexdigest() + ":project:" + PROJ)
     monkeypatch.setenv("GATEWAY_KEY_ONE", hashlib.sha256(KEY_C.encode()).hexdigest() + ":" + DB_ID.upper())
+    monkeypatch.setenv("GATEWAY_KEY_CHAT", hashlib.sha256(KEY_D.encode()).hexdigest() + ":by-uuid")
     monkeypatch.setenv("GATEWAY_KEY_BROKEN", "not-a-hash:*")
     monkeypatch.setenv("GATEWAY_API_KEY", KEY_LEGACY)
     monkeypatch.setenv("GATEWAY_RATE_PER_MIN", "5")
@@ -99,7 +101,7 @@ def bearer(k):
 def test_health_no_auth(client):
     r = client.get("/health")
     assert r.status_code == 200
-    assert r.json()["agents"] == 4  # cody, ci, one, legacy; broken one ignored
+    assert r.json()["agents"] == 5  # cody, ci, one, chat, legacy; broken one ignored
 
 
 def test_docs_off_by_default(client):
@@ -243,3 +245,23 @@ def test_get_project(client):
 def test_batch_by_uuid(client):
     r = client.post("/v1/secrets/batch", headers=bearer(KEY_B), json={"names": [DB_ID, "DB_USER"]})
     assert r.json()["secrets"] == {DB_ID: "db-pass", "DB_USER": "db-user"}
+
+
+def test_by_uuid_mode(client):
+    h = bearer(KEY_D)
+    # nothing to discover
+    assert client.get("/v1/secrets", headers=h).json()["secrets"] == []
+    # by name: no
+    assert client.get("/v1/value/DB_PASSWORD", headers=h).status_code == 404
+    # by exact uuid: yes, any secret
+    assert client.get("/v1/value/" + DB_ID, headers=h).text == "db-pass"
+    assert client.get("/v1/value/" + DUP1.upper(), headers=h).text == "one"
+    # unknown uuid
+    assert client.get("/v1/value/" + str(uuid.uuid4()), headers=h).status_code == 404
+    client.appmod.LIMITER._hits.clear()  # fixture allows 5 requests/min
+    # project by uuid
+    r = client.get("/v1/projects/%s/secrets" % PROJ, headers=h)
+    assert [s["name"] for s in r.json()["secrets"]] == ["DB_PASSWORD", "DB_USER"]
+    # batch mixing uuid and name
+    r = client.post("/v1/secrets/batch", headers=h, json={"names": [DUP2, "GITHUB_TOKEN"]})
+    assert r.json() == {"secrets": {DUP2: "two"}, "missing": ["GITHUB_TOKEN"]}

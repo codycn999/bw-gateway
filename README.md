@@ -56,12 +56,21 @@ agent means deleting its line.
 python3 scripts/new-agent-key.py cody 'OPENAI_*,GITHUB_TOKEN'
 python3 scripts/new-agent-key.py ci 'project:<bitwarden-project-uuid>'
 python3 scripts/new-agent-key.py deployer '<secret-uuid>,<secret-uuid>'
+python3 scripts/new-agent-key.py helper by-uuid
 ```
+
+`by-uuid` fits handing out uuids ad hoc (e.g. in chat): the key can read any
+secret or project whose exact uuid the agent is given, and nothing else. It
+cannot list secrets or look them up by name, so the uuid itself is the
+permission. Uuids are 122-bit random and failed guesses are rate limited.
+Anything the Bitwarden machine account can read is reachable this way, so
+keep secrets that no agent should ever get out of the machine account's
+projects.
 
 The script prints a `GATEWAY_KEY_<NAME>=<sha256>:<allowed>` line for
 `/etc/bw-gateway/env` and the key itself, once, to hand to the agent. Only the
 hash is stored. Allowed entries are exact names, globs (`OPENAI_*`), secret
-uuids, or `project:<uuid>`. Then `sudo systemctl restart bw-gateway`; the log line
+uuids, `project:<uuid>`, or `by-uuid`. Then `sudo systemctl restart bw-gateway`; the log line
 `loaded N agent key(s): ...` confirms the names.
 
 The old shared `GATEWAY_API_KEY` still works as a full-access key named
