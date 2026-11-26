@@ -4,6 +4,7 @@
 Usage (on any machine with python3, ideally the VM itself):
     python3 scripts/new-agent-key.py cody 'OPENAI_*,GITHUB_TOKEN'
     python3 scripts/new-agent-key.py ci 'project:<project-uuid>'
+    python3 scripts/new-agent-key.py deployer '<secret-uuid>,<secret-uuid>'
 
 Prints two things:
   1. the line to append to /etc/bw-gateway/env (only the hash is stored there)
@@ -23,7 +24,7 @@ def main():
         sys.exit("agent name may contain only letters, digits and _")
     patterns = [p.strip() for p in allow.split(",") if p.strip()]
     if not patterns:
-        sys.exit("give at least one secret name, glob or project:<uuid>")
+        sys.exit("give at least one secret name, glob, secret uuid or project:<uuid>")
     if "*" in patterns:
         print("warning: '*' lets this agent read every secret", file=sys.stderr)
     key = "bwg_" + secrets.token_urlsafe(32)

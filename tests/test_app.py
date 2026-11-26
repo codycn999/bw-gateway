@@ -16,6 +16,7 @@ sys.path.insert(0, ROOT)
 
 KEY_A = "a" * 64          # agent "cody": OPENAI_* and GITHUB_TOKEN
 KEY_B = "b" * 64          # agent "ci": one project
+KEY_C = "c" * 64          # agent "one": a single secret by uuid
 KEY_LEGACY = "legacy-shared-key"
 PROJ = str(uuid.uuid4())
 
@@ -30,7 +31,8 @@ def _add(key, value, project=None):
 
 _add("OPENAI_API_KEY", "sk-openai")
 _add("GITHUB_TOKEN", "ghp-token")
-_add("DB_PASSWORD", "db-pass", PROJ)
+DB_ID = _add("DB_PASSWORD", "db-pass", PROJ)
+_add("DB_USER", "db-user", PROJ)
 _add("ROOT_PASSWORD", "root-pass")
 DUP1 = _add("DUP", "one")
 DUP2 = _add("DUP", "two")
@@ -76,6 +78,7 @@ def client(monkeypatch):
     monkeypatch.setenv("BWS_ORGANIZATION_ID", str(uuid.uuid4()))
     monkeypatch.setenv("GATEWAY_KEY_CODY", hashlib.sha256(KEY_A.encode()).hexdigest() + ":OPENAI_*, GITHUB_TOKEN,DUP")
     monkeypatch.setenv("GATEWAY_KEY_CI", hashlib.sha256(KEY_B.encode()).hexdigest() + ":project:" + PROJ)
+    monkeypatch.setenv("GATEWAY_KEY_ONE", hashlib.sha256(KEY_C.encode()).hexdigest() + ":" + DB_ID.upper())
     monkeypatch.setenv("GATEWAY_KEY_BROKEN", "not-a-hash:*")
     monkeypatch.setenv("GATEWAY_API_KEY", KEY_LEGACY)
     monkeypatch.setenv("GATEWAY_RATE_PER_MIN", "5")
@@ -96,7 +99,7 @@ def bearer(k):
 def test_health_no_auth(client):
     r = client.get("/health")
     assert r.status_code == 200
-    assert r.json()["agents"] == 3  # cody, ci, legacy; broken one ignored
+    assert r.json()["agents"] == 4  # cody, ci, one, legacy; broken one ignored
 
 
 def test_docs_off_by_default(client):
@@ -217,3 +220,26 @@ def test_forwarded_for_only_from_trusted_proxy(client):
 def test_whoami(client):
     r = client.get("/v1/whoami", headers=bearer(KEY_B))
     assert r.json() == {"agent": "ci", "allow": ["project:" + PROJ]}
+
+
+def test_scope_by_secret_uuid(client):
+    r = client.get("/v1/secrets", headers=bearer(KEY_C))
+    assert [s["name"] for s in r.json()["secrets"]] == ["DB_PASSWORD"]
+    assert client.get("/v1/value/" + DB_ID, headers=bearer(KEY_C)).text == "db-pass"
+    assert client.get("/v1/value/DB_USER", headers=bearer(KEY_C)).status_code == 404
+
+
+def test_get_project(client):
+    r = client.get("/v1/projects/%s/secrets" % PROJ.upper(), headers=bearer(KEY_B))
+    assert r.status_code == 200
+    assert [(s["name"], s["value"]) for s in r.json()["secrets"]] == [("DB_PASSWORD", "db-pass"), ("DB_USER", "db-user")]
+    # key scoped to one secret only sees that one in the project
+    r = client.get("/v1/projects/%s/secrets" % PROJ, headers=bearer(KEY_C))
+    assert [s["name"] for s in r.json()["secrets"]] == ["DB_PASSWORD"]
+    # key without access to the project
+    assert client.get("/v1/projects/%s/secrets" % PROJ, headers=bearer(KEY_A)).status_code == 404
+
+
+def test_batch_by_uuid(client):
+    r = client.post("/v1/secrets/batch", headers=bearer(KEY_B), json={"names": [DB_ID, "DB_USER"]})
+    assert r.json()["secrets"] == {DB_ID: "db-pass", "DB_USER": "db-user"}

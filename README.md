@@ -19,6 +19,8 @@ GW=https://<gateway-host>
 H="Authorization: Bearer $BW_GATEWAY_KEY"
 
 curl -fsS -H "$H" $GW/v1/secrets                    # names you may read (no values)
+curl -fsS -H "$H" $GW/v1/secrets/<secret-uuid>      # one secret by uuid (or by name)
+curl -fsS -H "$H" $GW/v1/projects/<project-uuid>/secrets   # every secret in a project
 curl -fsS -H "$H" $GW/v1/secrets/OPENAI_API_KEY     # {"id","name","value","note"}
 export OPENAI_API_KEY=$(curl -fsS -H "$H" $GW/v1/value/OPENAI_API_KEY)   # bare value
 curl -fsS -H "$H" -H 'Content-Type: application/json' \
@@ -31,8 +33,9 @@ curl -fsS -H "$H" -H 'Content-Type: application/json' \
 | GET | `/v1/whoami` | Agent name and what it may read. |
 | GET | `/v1/secrets` | Names and ids this key may read. Never values. |
 | GET | `/v1/secrets/{name}` | One secret as JSON. `{name}` may also be the secret id. |
-| GET | `/v1/value/{name}` | One secret's value as `text/plain`. |
-| POST | `/v1/secrets/batch` | `{"names":[...]}` (max 50) → `{"secrets":{name:value}, "missing":[...]}` |
+| GET | `/v1/value/{name}` | One secret's value as `text/plain`. `{name}` may also be the secret id. |
+| GET | `/v1/projects/{project-uuid}/secrets` | `{"project", "secrets":[{id,name,value,note}]}`: every secret in that project this key may read. |
+| POST | `/v1/secrets/batch` | `{"names":[...]}` names or ids (max 50) → `{"secrets":{name:value}, "missing":[...]}` |
 | GET | `/secrets/by-key/{key}` | Old route, same scoping. SSH only; the tunnel does not route it. |
 
 Errors are JSON `{"error": "..."}`:
@@ -52,12 +55,13 @@ agent means deleting its line.
 ```bash
 python3 scripts/new-agent-key.py cody 'OPENAI_*,GITHUB_TOKEN'
 python3 scripts/new-agent-key.py ci 'project:<bitwarden-project-uuid>'
+python3 scripts/new-agent-key.py deployer '<secret-uuid>,<secret-uuid>'
 ```
 
 The script prints a `GATEWAY_KEY_<NAME>=<sha256>:<allowed>` line for
 `/etc/bw-gateway/env` and the key itself, once, to hand to the agent. Only the
-hash is stored. Allowed entries are exact names, globs (`OPENAI_*`), or
-`project:<uuid>`. Then `sudo systemctl restart bw-gateway`; the log line
+hash is stored. Allowed entries are exact names, globs (`OPENAI_*`), secret
+uuids, or `project:<uuid>`. Then `sudo systemctl restart bw-gateway`; the log line
 `loaded N agent key(s): ...` confirms the names.
 
 The old shared `GATEWAY_API_KEY` still works as a full-access key named

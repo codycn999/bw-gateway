@@ -62,6 +62,7 @@ def _int(cfg: Dict[str, str], name: str, default: int) -> int:
 
 KEY_PREFIX = "GATEWAY_KEY_"
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 @dataclass
@@ -69,10 +70,13 @@ class Agent:
     name: str
     patterns: List[str] = field(default_factory=list)
 
-    def can_read(self, key: str, project_ids: List[str]) -> bool:
+    def can_read(self, key: str, secret_id: str, project_ids: List[str]) -> bool:
         for p in self.patterns:
             if p.startswith("project:"):
-                if p[len("project:"):] in project_ids:
+                if p[len("project:"):].lower() in project_ids:
+                    return True
+            elif p.startswith("id:") or _UUID.match(p):
+                if p.split(":", 1)[-1].lower() == secret_id:
                     return True
             elif fnmatch.fnmatchcase(key, p):
                 return True
@@ -88,8 +92,8 @@ def load_agents(cfg: Dict[str, str]) -> Dict[str, Agent]:
 
     Each agent is one config line:
         GATEWAY_KEY_<NAME>=<sha256 of the key>:<pattern>,<pattern>,...
-    A pattern is a secret name glob (OPENAI_*, GITHUB_TOKEN) or
-    project:<project-uuid>. Only the hash is stored on the VM.
+    A pattern is a secret name glob (OPENAI_*, GITHUB_TOKEN), a secret
+    uuid, or project:<project-uuid>. Only the hash is stored on the VM.
     """
     agents: Dict[str, Agent] = {}
     for k, v in sorted(cfg.items()):
@@ -238,7 +242,8 @@ class Vault:
                 return self._index
             data = self._call(lambda c, org: c.secrets().list(org), "list secrets")
             self._index = [
-                {"id": str(s.id), "key": s.key, "project_ids": [str(p) for p in (s.project_ids or [])]}
+                {"id": str(s.id).lower(), "key": s.key,
+                 "project_ids": [str(p).lower() for p in (s.project_ids or [])]}
                 for s in (data.data or [])
             ]
             self._index_at = now
@@ -338,14 +343,14 @@ def authenticate(request: Request) -> Agent:
 
 
 def visible(agent: Agent) -> List[dict]:
-    return [s for s in VAULT.index() if agent.can_read(s["key"], s["project_ids"])]
+    return [s for s in VAULT.index() if agent.can_read(s["key"], s["id"], s["project_ids"])]
 
 
 def resolve(agent: Agent, name: str) -> dict:
     """Find one readable secret by name (or by id). Secrets the agent may not
     read look exactly like missing ones."""
     mine = visible(agent)
-    matches = [s for s in mine if s["key"] == name] or [s for s in mine if s["id"] == name]
+    matches = [s for s in mine if s["key"] == name] or [s for s in mine if s["id"] == name.lower()]
     if not matches:
         raise HTTPException(status_code=404, detail="secret not found: %s" % name)
     if len(matches) > 1:
@@ -414,6 +419,20 @@ def get_batch(request: Request, names: List[str] = Body(..., embed=True)):
     values = VAULT.get_many(list(dict.fromkeys(found.values())))
     audit(request, "batch", list(found))
     return {"secrets": {n: values[i]["value"] for n, i in found.items() if i in values}, "missing": missing}
+
+
+@app.get("/v1/projects/{project_id}/secrets")
+def get_project(project_id: str, request: Request):
+    """Every secret in one Bitwarden project that this key may read, with values."""
+    agent = authenticate(request)
+    pid = project_id.lower()
+    items = [s for s in visible(agent) if pid in s["project_ids"]]
+    if not items:
+        raise HTTPException(status_code=404, detail="project not found: %s" % project_id)
+    values = VAULT.get_many([s["id"] for s in items])
+    audit(request, "project:" + pid, [s["key"] for s in items])
+    return {"project": pid,
+            "secrets": sorted((values[s["id"]] for s in items if s["id"] in values), key=lambda v: v["name"])}
 
 
 @app.get("/v1/secrets/{name:path}")
