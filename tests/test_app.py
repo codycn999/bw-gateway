@@ -265,3 +265,11 @@ def test_by_uuid_mode(client):
     # batch mixing uuid and name
     r = client.post("/v1/secrets/batch", headers=h, json={"names": [DUP2, "GITHUB_TOKEN"]})
     assert r.json() == {"secrets": {DUP2: "two"}, "missing": ["GITHUB_TOKEN"]}
+
+
+def test_help_no_auth(client):
+    r = client.get("/v1/help", headers={"host": "bw-gateway.example.org", "x-forwarded-proto": "https"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/markdown")
+    assert "https://bw-gateway.example.org/v1/value/" in r.text
+    assert client.get("/v1/").status_code == 200

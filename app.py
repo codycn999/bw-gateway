@@ -386,6 +386,59 @@ async def _no_store(request: Request, call_next):
     return response
 
 
+HELP = """# bw-gateway 使用说明
+
+用途：用你的网关 key 读取 Bitwarden 机密。用户会在对话中给你机密 UUID 或项目 UUID，只读取用户给出的 UUID。
+
+每个请求都带请求头 `Authorization: Bearer <网关 key>`。key 只能放在请求头里，不要放进 URL（会被拒绝，400）。
+
+## 接口
+
+- 单个机密的值（text/plain）：
+  curl -fsS -H "Authorization: Bearer $BW_GATEWAY_KEY" {base}/v1/value/<机密UUID>
+- 单个机密（JSON {{"id","name","value","note"}}）：
+  curl -fsS -H "Authorization: Bearer $BW_GATEWAY_KEY" {base}/v1/secrets/<机密UUID>
+- 项目里的全部机密（JSON {{"project","secrets":[{{"id","name","value","note"}}]}}）：
+  curl -fsS -H "Authorization: Bearer $BW_GATEWAY_KEY" {base}/v1/projects/<项目UUID>/secrets
+- 多个机密（JSON {{"secrets":{{"<UUID>":"<值>"}},"missing":[...]}}，最多 50 个）：
+  curl -fsS -H "Authorization: Bearer $BW_GATEWAY_KEY" -H "Content-Type: application/json" -d '{{"names":["<UUID1>","<UUID2>"]}}' {base}/v1/secrets/batch
+- 列出 key 已绑定的机密名字（不含值）：GET {base}/v1/secrets
+- 确认 key 可用：GET {base}/v1/whoami
+
+## 返回码
+
+- 200 成功
+- 401 key 错误或缺失。不要反复重试，连续失败会导致 IP 被封 15 分钟。
+- 404 UUID 不存在或无权读取。核对 UUID，不要猜测其他 UUID。
+- 429 请求过于频繁（每把 key 每分钟 60 次）或 IP 被暂时封禁。按 Retry-After 等待。
+- 502/503 网关或 Bitwarden 暂时不可用，稍后重试一次，仍失败就告诉用户。
+
+## 安全规则
+
+- 机密的值只用于完成任务：直接传给需要它的命令或写入环境变量，例如
+  export OPENAI_API_KEY="$(curl -fsS -H "Authorization: Bearer $BW_GATEWAY_KEY" {base}/v1/value/<UUID>)"
+- 不要在回复、日志、提交、文件或命令输出中显示机密的值或网关 key。
+- 不要把机密或 key 写进代码仓库、记忆或笔记，也不要缓存到磁盘；需要时重新读取。
+- 只读取用户明确给出的 UUID，不要枚举或猜测。
+"""
+
+
+def base_url(request: Request) -> str:
+    host = request.headers.get("host", "127.0.0.1:8080")
+    peer = request.client.host if request.client else ""
+    proto = request.headers.get("x-forwarded-proto", "") if peer in TRUSTED_PROXIES else ""
+    if not proto:
+        proto = "http" if host.startswith(("127.0.0.1", "localhost")) else "https"
+    return "%s://%s" % (proto, host)
+
+
+@app.get("/v1/help", response_class=PlainTextResponse)
+@app.get("/v1/", response_class=PlainTextResponse, include_in_schema=False)
+def help_text(request: Request):
+    """Usage guide for agents. No auth, no secrets."""
+    return PlainTextResponse(HELP.format(base=base_url(request)), media_type="text/markdown; charset=utf-8")
+
+
 @app.get("/health")
 def health():
     cur = load_config()
