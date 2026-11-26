@@ -1,104 +1,133 @@
 # bw-gateway
 
-A minimal HTTP gateway in front of Bitwarden Secrets Manager (cloud).
-
-## Why
-
-Some agents cannot hold a Bitwarden machine-account access token directly
-(key isolation). This gateway holds the real token on one VM only and exposes
-a plain API key (`X-Gateway-Key`) to agents. The machine-account token never
-leaves the VM.
-
-## How it works
-
-- The gateway runs on the VM, listening only on `127.0.0.1:8080`.
-- It reads the machine-account token and organization ID from `.env`
-  (`/opt/bw-gateway/.env`, mode `600`, owned by the `bw-gateway` user).
-- Agents call the gateway over SSH with the `X-Gateway-Key` header.
-- The gateway logs in to Bitwarden with the machine-account token (via the
-  official Bitwarden SDK) and fetches the requested secret.
+A small HTTPS gateway in front of Bitwarden Secrets Manager (cloud). An agent
+sends its own gateway key in a header and gets back the secrets that key is
+allowed to read. The Bitwarden machine-account token stays on the VM.
 
 ```
-agent --(SSH)--> 127.0.0.1:8080 --(X-Gateway-Key)--> bw-gateway
-bw-gateway --(machine-account token)--> vault.bitwarden.com
+agent --HTTPS, Authorization: Bearer <agent key>--> Caddy / Cloudflare Tunnel
+      --> 127.0.0.1:8080 bw-gateway --machine-account token--> vault.bitwarden.com
 ```
 
-## API
+## For agents
 
-| Method | Path | Description |
-| ------ | ---- | ----------- |
-| GET | `/health` | No auth. Reports whether token/org are configured and logged in. |
-| GET | `/projects` | List projects in the organization. |
-| GET | `/secrets` | List secrets (metadata; values included by the SDK). |
-| GET | `/secrets/{id}` | Get one secret by ID. |
-| GET | `/secrets/by-key/{key}` | Get one secret by its key. |
+Send the key in a header, never in the URL (URLs land in logs; the gateway
+answers `400` if it sees `?key=`). `X-Gateway-Key: <key>` also works.
 
-All endpoints except `/health` require the `X-Gateway-Key` header.
-FastAPI also serves interactive docs at `/docs` (Swagger UI) and `/redoc`.
+```bash
+GW=https://<gateway-host>
+H="Authorization: Bearer $BW_GATEWAY_KEY"
+
+curl -fsS -H "$H" $GW/v1/secrets                    # names you may read (no values)
+curl -fsS -H "$H" $GW/v1/secrets/OPENAI_API_KEY     # {"id","name","value","note"}
+export OPENAI_API_KEY=$(curl -fsS -H "$H" $GW/v1/value/OPENAI_API_KEY)   # bare value
+curl -fsS -H "$H" -H 'Content-Type: application/json' \
+     -d '{"names":["OPENAI_API_KEY","GITHUB_TOKEN"]}' $GW/v1/secrets/batch
+```
+
+| Method | Path | Returns |
+| ------ | ---- | ------- |
+| GET | `/health` | No auth. Service status. |
+| GET | `/v1/whoami` | Agent name and what it may read. |
+| GET | `/v1/secrets` | Names and ids this key may read. Never values. |
+| GET | `/v1/secrets/{name}` | One secret as JSON. `{name}` may also be the secret id. |
+| GET | `/v1/value/{name}` | One secret's value as `text/plain`. |
+| POST | `/v1/secrets/batch` | `{"names":[...]}` (max 50) → `{"secrets":{name:value}, "missing":[...]}` |
+| GET | `/secrets/by-key/{key}` | Old route, same scoping. Not exposed through the HTTPS entry. |
+
+Errors are JSON `{"error": "..."}`:
+
+- `401` wrong or missing key.
+- `404` the secret does not exist **or** this key may not read it (the two look the same on purpose).
+- `409` several secrets share that name; ask by id (listed in the error).
+- `429` rate limited; see `Retry-After`.
+
+The old `GET /secrets` (every secret at once) and `GET /projects` are gone.
+
+## Agent keys
+
+Each agent has its own key, limited to the secrets it needs. Revoking one
+agent means deleting its line.
+
+```bash
+python3 scripts/new-agent-key.py cody 'OPENAI_*,GITHUB_TOKEN'
+python3 scripts/new-agent-key.py ci 'project:<bitwarden-project-uuid>'
+```
+
+The script prints a `GATEWAY_KEY_<NAME>=<sha256>:<allowed>` line for
+`/etc/bw-gateway/env` and the key itself, once, to hand to the agent. Only the
+hash is stored. Allowed entries are exact names, globs (`OPENAI_*`), or
+`project:<uuid>`. Then `sudo systemctl restart bw-gateway`; the log line
+`loaded N agent key(s): ...` confirms the names.
+
+The old shared `GATEWAY_API_KEY` still works as a full-access key named
+`legacy`, so existing callers keep working during the move. Remove it once
+every agent has its own key.
+
+## Limits and logging
+
+- 60 requests per key per minute (`GATEWAY_RATE_PER_MIN`).
+- 10 failed authentications from one IP in 10 minutes block that IP for 15
+  minutes. Behind Caddy or cloudflared the real client IP comes from the
+  proxy's `X-Forwarded-For`, trusted only from `127.0.0.1`.
+- Each read is logged to journald as
+  `audit agent=<name> ip=<ip> action=get secrets=<names>`. Keys and values are
+  never logged. `sudo journalctl -u bw-gateway | grep audit`.
+- Responses carry `Cache-Control: no-store`. `/docs` is off unless
+  `GATEWAY_ENABLE_DOCS=1`.
+
+All tunables are listed in `.env.example`.
+
+## HTTPS entry (one time, on the VM)
+
+The gateway keeps listening on `127.0.0.1:8080`. Pick one front door:
+
+- **Caddy** (`deploy/Caddyfile`): set the host name (no domain needed:
+  `<external-ip>.sslip.io`), install Caddy, copy the file to
+  `/etc/caddy/Caddyfile`, `sudo systemctl reload caddy`. Open tcp:80 and
+  tcp:443 in the GCP firewall and give the VM a static external IP.
+- **Cloudflare Tunnel** (`deploy/cloudflared.yml`): needs a domain on
+  Cloudflare; no inbound ports.
+
+Both expose only `/health` and `/v1/*`.
 
 ## Setup (on the VM)
 
 ```bash
-# System user and directory
 sudo useradd -r -s /usr/sbin/nologin bw-gateway
-sudo mkdir -p /opt/bw-gateway
-sudo chown bw-gateway:bw-gateway /opt/bw-gateway
-sudo chmod 750 /opt/bw-gateway
+sudo git clone <repo> /opt/bw-gateway
+cd /opt/bw-gateway && sudo python3 -m venv venv && sudo ./venv/bin/pip install -r requirements.txt
 
-# Code and dependencies
-cd /opt/bw-gateway
-python3 -m venv venv
-./venv/bin/pip install -r requirements.txt
+sudo mkdir -p /etc/bw-gateway
+sudo cp .env.example /etc/bw-gateway/env
+sudo nano /etc/bw-gateway/env        # token, org id, one GATEWAY_KEY_<NAME> per agent
+sudo chown root:root /etc/bw-gateway/env && sudo chmod 600 /etc/bw-gateway/env
 
-# Config (never commit the real .env)
-cp .env.example .env
-sudo nano .env   # fill in BWS_ACCESS_TOKEN, BWS_ORGANIZATION_ID, GATEWAY_API_KEY
-sudo chmod 600 .env
-sudo chown bw-gateway:bw-gateway .env
-
-# Service
 sudo cp bw-gateway.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now bw-gateway
+sudo mkdir -p /etc/systemd/system/bw-gateway.service.d
+printf '[Service]\nEnvironmentFile=/etc/bw-gateway/env\nNoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\nMemoryMax=300M\n' \
+  | sudo tee /etc/systemd/system/bw-gateway.service.d/override.conf
+sudo systemctl daemon-reload && sudo systemctl enable --now bw-gateway
 ```
 
-Generate the gateway API key with, e.g.:
+## Deploying updates
+
+Code on `main` is the source of truth. `sudo /usr/local/bin/bw-gateway-deploy`
+fetches `main`, installs requirements, restarts and prints `/health`. Config
+lives in `/etc/bw-gateway/env`, which deploys never touch. Any change to that
+file needs `sudo systemctl restart bw-gateway`.
+
+## Tests
 
 ```bash
-openssl rand -hex 32
+pip install -r requirements.txt pytest httpx
+pytest -q
 ```
 
-## Updating / deploying
+The Bitwarden SDK is replaced by a fake, so no token is needed.
 
-The code in this repo is the source of truth. To deploy an update to the VM:
+## Security notes
 
-1. Pull or copy the new `app.py` (and any other changed files) to
-   `/opt/bw-gateway/`.
-2. If dependencies changed, re-run `./venv/bin/pip install -r requirements.txt`.
-3. Restart the service: `sudo systemctl restart bw-gateway`.
-4. Verify: `curl http://127.0.0.1:8080/health` and fetch one secret.
-
-Notes:
-
-- The gateway API key is read once at startup, so changing
-  `GATEWAY_API_KEY` requires a restart.
-- The machine-account token and organization ID are re-read on every
-  (re)login, so filling them in after first start needs no restart.
-  Rotating the token later does need a restart (the logged-in client is
-  cached).
-- The `.env` file is never committed and never leaves the VM.
-
-## Logging
-
-Logs go to journald: `sudo journalctl -u bw-gateway`. The uvicorn access log
-records each request's time, method, path and status code (including which
-secret ID was fetched and failed 401 attempts). It does not log the API key
-value or secret values.
-
-## Security
-
-- The machine-account token and the gateway API key are secrets. Keep them
-  out of chat, memory, and version control.
-- The gateway binds only to localhost; reach it via SSH.
-- Give each calling agent its own gateway key when multi-key support lands,
-  so one key can be revoked without affecting others.
+- Keep the machine-account token and agent keys out of chat, memory and git.
+- Give each agent the narrowest allowed list that works; avoid `*`.
+- Rotate an agent key by generating a new line and deleting the old one.

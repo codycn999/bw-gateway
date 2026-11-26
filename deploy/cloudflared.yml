@@ -1,0 +1,13 @@
+# Cloudflare Tunnel entry for bw-gateway (no inbound ports on the VM).
+# Setup: cloudflared tunnel login; cloudflared tunnel create bw-gateway;
+#        cloudflared tunnel route dns bw-gateway gateway.example.com
+# Then put this at /etc/cloudflared/config.yml and run
+#        sudo cloudflared service install
+tunnel: bw-gateway
+credentials-file: /etc/cloudflared/bw-gateway.json
+
+ingress:
+  - hostname: gateway.example.com
+    path: ^/(health|v1/.*)$
+    service: http://127.0.0.1:8080
+  - service: http_status:404
