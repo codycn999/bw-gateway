@@ -30,6 +30,7 @@ curl -fsS -H "$H" -H 'Content-Type: application/json' \
 | Method | Path | Returns |
 | ------ | ---- | ------- |
 | GET | `/health` | No auth. Service status. |
+| GET | `/v1/help` | No auth. Usage guide for agents (Markdown, Chinese). Also at `/v1/`. |
 | GET | `/v1/whoami` | Agent name and what it may read. |
 | GET | `/v1/secrets` | Names and ids this key may read. Never values. |
 | GET | `/v1/secrets/{name}` | One secret as JSON. `{name}` may also be the secret id. |
