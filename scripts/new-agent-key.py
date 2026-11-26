@@ -5,6 +5,7 @@ Usage (on any machine with python3, ideally the VM itself):
     python3 scripts/new-agent-key.py cody 'OPENAI_*,GITHUB_TOKEN'
     python3 scripts/new-agent-key.py ci 'project:<project-uuid>'
     python3 scripts/new-agent-key.py deployer '<secret-uuid>,<secret-uuid>'
+    python3 scripts/new-agent-key.py helper by-uuid
 
 Prints two things:
   1. the line to append to /etc/bw-gateway/env (only the hash is stored there)
